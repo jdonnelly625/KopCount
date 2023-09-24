@@ -2,6 +2,8 @@ import praw
 import schedule
 import time
 from matplotlib import pyplot as plt
+import warnings
+
 
 class LFCAnalyzer:
     """Analyze and visualize mentions of LFC players in match threads."""
@@ -141,19 +143,21 @@ class LFCAnalyzer:
     def initialize_reddit(self):
         """Initialize PRAW instance for Reddit access."""
         return praw.Reddit(
-                client_id="YOUR_CLIENT_ID",
+                client_id="YOUR_ID",
                 client_secret="YOUR_SECRET",
                 user_agent="<console:LFC:1.0>"
 
         )
 
     def check_for_players(self, comment):
-        """Check a comment for mentions of player names. If player found in comment update count"""
+        print("CHECKING FOR PLAYERS")
+        """Check a comment for mentions of player names."""
         for player, names in self.playerNames.items():
             if any(name in comment.body.lower() for name in names):
                 self.playerCounts[player] += 1
 
     def update_plot(self):
+        print("UPDATING PLOT")
         """Visualize player mention data."""
         plt.clf()
     
@@ -177,32 +181,36 @@ class LFCAnalyzer:
 
     def process_comments(self):
         """Fetch and process comments from LFC match threads."""
+        print("PROCESSING COMMENTS")
         lfc = self.reddit.subreddit("liverpoolfc")
         for post in lfc.search("Match Thread", time_filter="day"):
-            #confirm it is a match thread, not related thread or similar
             if "match thread" in post.title.lower():
-                # Replace "MoreComments" objects with actual comments.
-                post.comments.replace_more(limit=None)
+                print(post.title)
+                
+                # Fetch the newest 100 comments
+                post.comment_sort = 'new'
+                post.comment_limit = 100
+                post.comments.replace_more(limit=10)  # Limit the depth of replacements
+    
+                # Fetch comments and filter out MoreComments objects
                 all_comments = post.comments.list()
-    
-                # Sort comments by their creation timestamp
-                all_comments.sort(key=lambda x: x.created_utc, reverse=True)
+                all_comments = [comment for comment in all_comments if not isinstance(comment, praw.models.MoreComments)]
                 
-                # If this is the first run, just set the latest comment's timestamp.
+                
+                
+                # If this is the first run, just set the latest comment's timestamp to 0
                 if self.last_checked_timestamp is None:
-                    # Set to a very old timestamp to ensure all comments are processed the first time.
                     self.last_checked_timestamp = 0
-    
-                
+        
                 # Process comments newer than the last checked timestamp.
                 for comment in all_comments:
                     if comment.created_utc <= self.last_checked_timestamp:
                         break
-                    
+                        
                     if hasattr(comment, "body") and comment.id not in self.comments_seen:
                         self.check_for_players(comment)
                         self.comments_seen.add(comment.id)
-    
+        
                 # Update the last checked timestamp.
                 self.last_checked_timestamp = all_comments[0].created_utc
 
@@ -213,14 +221,20 @@ class LFCAnalyzer:
             self.playerPlots[player].append(self.playerCounts[player])
 
     def run(self):
+        
         """Execute analyzer at regular intervals."""
-        print("Running")
+        print("RUNNING")
+        #process comments every minute
         schedule.every(1).minute.do(self.process_comments)
+        #update the plot every minute
         schedule.every(1).minute.do(self.update_plot)
+        #Run until manually cancelled
         while True:
             schedule.run_pending()
             time.sleep(1)
 
 if __name__ == "__main__":
+    print("Starting program")
     analyzer = LFCAnalyzer()
+    print("Analyzer initialized")
     analyzer.run()
