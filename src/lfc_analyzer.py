@@ -2,8 +2,9 @@ import praw
 import schedule
 import time
 from matplotlib import pyplot as plt
-import warnings
-
+from datetime import datetime
+from praw.exceptions import APIException
+import re
 
 class LFCAnalyzer:
     """Analyze and visualize mentions of LFC players in match threads."""
@@ -14,11 +15,12 @@ class LFCAnalyzer:
         self.comments_seen = set()
         self.time_stamps = []
         self.last_checked_timestamp = None
+        self.current_match_thread = None
 
         # Predefined player data
         players = {
             "Alisson": {
-                "nicknames": ["ali", "alison", "alisson", "becker", "becks"],
+                "nicknames": [" ali", "alison", "alisson", "becker", "becks", "ali ", "alii"],
                 "count": 0,
                 "plot": []
             },
@@ -38,7 +40,7 @@ class LFCAnalyzer:
                 "plot": []
             },
             "Gomez": {
-                "nicknames": ["joe", "gomez"],
+                "nicknames": ["joe", "gomez", "joey"],
                 "count": 0,
                 "plot": []
             },
@@ -53,7 +55,7 @@ class LFCAnalyzer:
                 "plot": []
             },
             "Nunez": {
-                "nicknames": ["darwin", "nunez", "darwizzy"],
+                "nicknames": ["darwin", "nunez", "darwizzy", "chaos man", "chaos agent", "agent of chaos"],
                 "count": 0,
                 "plot": []
             },
@@ -98,17 +100,17 @@ class LFCAnalyzer:
                 "plot": []
             },
             "Mac Allister": {
-                "nicknames": ["alexis", "mac allister", "macca", "big mac", "mac"],
+                "nicknames": ["alexis", "mac allister", "macca", "big mac", " mac", "mac "],
                 "count": 0,
                 "plot": []
             },
             "Szoboszlai": {
-                "nicknames": ["dom", "big dom", "szobo", "schlobbers", "szoboszlai", "szob"],
+                "nicknames": ["dom ", "big dom", "szobo", "schlobbers", "szoboszlai", "szob", "sobossla", "dommy", " dom"],
                 "count": 0,
                 "plot": []
             },
             "Gravenberch": {
-                "nicknames": ["ryan", "gravenberch", "grav", "ry", "gravy"],
+                "nicknames": ["ryan", "gravenberch", "grav", "gravy"],
                 "count": 0,
                 "plot": []
             },
@@ -128,7 +130,12 @@ class LFCAnalyzer:
                 "plot": []
             },
             "Quansah": {
-                "nicknames": ["jarrel", "jarel", "jarell", "quans", "jar", "quansah"],
+                "nicknames": ["jarrel", "jarel", "jarell", "quans", "quansah"],
+                "count": 0,
+                "plot": []
+            },
+            "Doak": {
+                "nicknames": ["doak", "ben doak", "doaky"],
                 "count": 0,
                 "plot": []
             }
@@ -139,6 +146,7 @@ class LFCAnalyzer:
         self.playerNames = {name: data["nicknames"] for name, data in players.items()}
         self.playerCounts = {name: data["count"] for name, data in players.items()}
         self.playerPlots = {name: data["plot"] for name, data in players.items()}
+    
 
     def initialize_reddit(self):
         """Initialize PRAW instance for Reddit access."""
@@ -148,13 +156,33 @@ class LFCAnalyzer:
                 user_agent="<console:LFC:1.0>"
 
         )
+    @staticmethod
+    def convert_timestamp(unix_timestamp):
+        return datetime.utcfromtimestamp(unix_timestamp).strftime('%Y-%m-%d %H:%M:%S')
 
+    def write_comment_to_file(self, comment, player):
+        """Writes a comment, its timestamp, and the associated player to test.txt."""
+        
+            
+        # print(f"Timestamp: {self.convert_timestamp(comment.created_utc)}, Player: {player}, Comment: {comment.body}\n")
+        
+    def find_match_thread(self):
+        lfc = self.reddit.subreddit("liverpoolfc")
+        for post in lfc.search("Match Thread", time_filter="day"):
+            if "match thread" in post.title.lower():
+                self.current_match_thread = post
+                break
+            
     def check_for_players(self, comment):
         print("CHECKING FOR PLAYERS")
         """Check a comment for mentions of player names."""
         for player, names in self.playerNames.items():
             if any(name in comment.body.lower() for name in names):
                 self.playerCounts[player] += 1
+                self.write_comment_to_file(comment, player)
+                
+    
+
 
     def update_plot(self):
         print("UPDATING PLOT")
@@ -181,44 +209,78 @@ class LFCAnalyzer:
 
     def process_comments(self):
         """Fetch and process comments from LFC match threads."""
-        print("PROCESSING COMMENTS")
-        lfc = self.reddit.subreddit("liverpoolfc")
-        for post in lfc.search("Match Thread", time_filter="day"):
-            if "match thread" in post.title.lower():
-                print(post.title)
-                
-                # Fetch the newest 100 comments
-                post.comment_sort = 'new'
-                post.comment_limit = 100
-                post.comments.replace_more(limit=10)  # Limit the depth of replacements
+        try:
+            print("PROCESSING COMMENTS")
+            
+            if self.current_match_thread is None:
+                self.find_match_thread()
     
-                # Fetch comments and filter out MoreComments objects
-                all_comments = post.comments.list()
-                all_comments = [comment for comment in all_comments if not isinstance(comment, praw.models.MoreComments)]
+            # Check if match thread was found
+            if self.current_match_thread is None:
+                print("No match thread found for today.")
+                return
+            post = self.current_match_thread
+            
+            # Fetch the newest 100 comments
+            post.comment_sort = 'new'
+            post.comment_limit = 100
+            
+            # Create an empty list to store the final top-level comments
+            all_comments = []
+    
+            # Iterating over top-level items (comments + MoreComments objects aka "load more comments")
+            for item in post.comments:
+                if isinstance(item, praw.models.MoreComments):
+                    # Load the additional top-level comments represented by this MoreComments object
+                    more_comments = item.comments()
+                    all_comments.extend(more_comments)
+                else:
+                    all_comments.append(item)
+            
+            
+            # If this is the first run, just set the latest comment's timestamp to 0
+            if self.last_checked_timestamp is None:
+                self.last_checked_timestamp = 0
+    
+            # Process comments newer than the last checked timestamp.
+            for comment in all_comments:
+                if comment.created_utc <= self.last_checked_timestamp:
+                    break
+                    
+                if hasattr(comment, "body") and comment.id not in self.comments_seen:
+                    self.check_for_players(comment)
+                    self.comments_seen.add(comment.id)
+    
+            # Update the last checked timestamp.
+            self.last_checked_timestamp = all_comments[0].created_utc
+    
+            # Update time and counts, to add another minute to the plot axis
+            self.comment_counter += 1
+            self.time_stamps.append(self.comment_counter)
+            
+            # add the new counts for y axis
+            for player in self.playerNames.keys():
+                self.playerPlots[player].append(self.playerCounts[player])
                 
+            # Checking and printing rate limit status
+            limits = self.reddit.auth.limits
+            print(f"Remaining requests: {limits['remaining']}")
+            print(f"Rate limit will reset at: {limits['reset_timestamp']}")
+            
+            #Update the plot
+            self.update_plot
+        except APIException as e:
+            if e.error_type == "RATELIMIT":
+                # Extract the delay from e.message. 
+                # The message typically looks like: "You are doing that too much. Try again in X minutes."
+                delay = int(re.search(r"(\d+)", e.message).group(1)) * 60  # Convert minutes to seconds
+                print(f"Rate Limit Exceeded! Waiting for {delay} seconds.")
+                time.sleep(delay)
                 
-                
-                # If this is the first run, just set the latest comment's timestamp to 0
-                if self.last_checked_timestamp is None:
-                    self.last_checked_timestamp = 0
-        
-                # Process comments newer than the last checked timestamp.
-                for comment in all_comments:
-                    if comment.created_utc <= self.last_checked_timestamp:
-                        break
-                        
-                    if hasattr(comment, "body") and comment.id not in self.comments_seen:
-                        self.check_for_players(comment)
-                        self.comments_seen.add(comment.id)
-        
-                # Update the last checked timestamp.
-                self.last_checked_timestamp = all_comments[0].created_utc
+            else:
+                print(f"APIException: {e}")
 
-        # Update time and counts
-        self.comment_counter += 1
-        self.time_stamps.append(self.comment_counter)
-        for player in self.playerNames.keys():
-            self.playerPlots[player].append(self.playerCounts[player])
+       
 
     def run(self):
         
@@ -226,8 +288,7 @@ class LFCAnalyzer:
         print("RUNNING")
         #process comments every minute
         schedule.every(1).minute.do(self.process_comments)
-        #update the plot every minute
-        schedule.every(1).minute.do(self.update_plot)
+        
         #Run until manually cancelled
         while True:
             schedule.run_pending()
